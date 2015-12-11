@@ -257,7 +257,7 @@ func (s *StateStore) NodeByID(nodeID string) (*structs.Node, error) {
 		var nodes []string
 		for _, result := range existing {
 			node := result.(*structs.Node)
-			append(nodes, node.ID)
+			nodes = append(nodes, node.ID)
 		}
 		return nil, fmt.Errorf("Found multiple results for argument: %v", nodes)
 
