@@ -241,13 +241,26 @@ func (s *StateStore) UpdateNodeDrain(index uint64, nodeID string, drain bool) er
 func (s *StateStore) NodeByID(nodeID string) (*structs.Node, error) {
 	txn := s.db.Txn(false)
 
-	existing, err := txn.First("nodes", "id", nodeID)
+	existing, err := txn.SearchByPrefix("nodes", "id", nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("node lookup failed: %v", err)
 	}
 
 	if existing != nil {
-		return existing.(*structs.Node), nil
+		// Normally we expect exactly one result
+		if len(existing) == 1 {
+			return existing[0].(*structs.Node), nil
+		}
+
+		// We got multiple results so return an error with
+		// possible options, so that the user can try again
+		var nodes []string
+		for _, result := range existing {
+			node := result.(*structs.Node)
+			append(nodes, node.ID)
+		}
+		return nil, fmt.Errorf("Found multiple results for argument: %v", nodes)
+
 	}
 	return nil, nil
 }
