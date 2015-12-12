@@ -241,26 +241,26 @@ func (s *StateStore) UpdateNodeDrain(index uint64, nodeID string, drain bool) er
 func (s *StateStore) NodeByID(nodeID string) (*structs.Node, error) {
 	txn := s.db.Txn(false)
 
-	existing, err := txn.SearchByPrefix("nodes", "id", nodeID)
+	existing, err := txn.Find("nodes", "id", nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("node lookup failed: %v", err)
 	}
 
 	if existing != nil {
-		// Normally we expect exactly one result
+		// Return exact match directly
 		if len(existing) == 1 {
 			return existing[0].(*structs.Node), nil
 		}
 
-		// We got multiple results so return an error with
-		// possible options, so that the user can try again
+		// The results were ambiguous for the given node identifier. Return
+		// an error with possible options so that the user can try again with
+		// a more specific identifier.
 		var nodes []string
 		for _, result := range existing {
 			node := result.(*structs.Node)
 			nodes = append(nodes, node.ID)
 		}
-		return nil, fmt.Errorf("Found multiple results for argument: %v", nodes)
-
+		return nil, fmt.Errorf("Ambiguous identifier: %v", nodes)
 	}
 	return nil, nil
 }
