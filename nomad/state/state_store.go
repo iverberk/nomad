@@ -366,7 +366,7 @@ func (s *StateStore) JobByID(id string) (*structs.Job, error) {
 		var jobs []string
 		for _, result := range existing {
 			job := result.(*structs.Job)
-			jobs = append(nodes, job.ID)
+			jobs = append(jobs, job.ID)
 		}
 		return nil, fmt.Errorf("Ambiguous identifier: %v", jobs)
 	}
@@ -681,7 +681,7 @@ func (s *StateStore) AllocByID(id string) (*structs.Allocation, error) {
 		var allocs []string
 		for _, result := range existing {
 			alloc := result.(*structs.Allocation)
-			allocs = append(nodes, alloc.ID)
+			allocs = append(allocs, alloc.ID)
 		}
 		return nil, fmt.Errorf("Ambiguous identifier: %v", allocs)
 	}
