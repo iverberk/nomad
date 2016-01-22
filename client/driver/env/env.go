@@ -30,8 +30,8 @@ const (
 
 	// Prefix for passing both dynamic and static port allocations to
 	// tasks.
-	// E.g. $NOMAD_PORT_1 or $NOMAD_PORT_http
-	PortPrefix = "NOMAD_PORT_"
+	// E.g. $NOMAD_IP_1 or $NOMAD_IP_http
+	PortPrefix = "NOMAD_IP_"
 
 	// Prefix for passing task meta data.
 	MetaPrefix = "NOMAD_META_"
@@ -104,7 +104,8 @@ func (t *TaskEnvironment) Build() *TaskEnvironment {
 
 	// Build the ports
 	for label, port := range t.ports {
-		t.taskEnv[fmt.Sprintf("%s%s", PortPrefix, label)] = strconv.Itoa(port)
+		var ip_port = fmt.Sprintf("%s:%d", t.ip, port)
+		t.taskEnv[fmt.Sprintf("%s%s", PortPrefix, label)] = ip_port
 	}
 
 	// Build the directories
