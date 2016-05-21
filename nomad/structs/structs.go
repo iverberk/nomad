@@ -1941,6 +1941,10 @@ const (
 	// TaskArtifactDownloadFailed indicates that downloading the artifacts
 	// failed.
 	TaskArtifactDownloadFailed = "Failed Artifact Download"
+
+	// TaskDiskExceeded indicates that one of the tasks in a taskgroup has
+	// exceeded the requested disk resources.
+	TaskDiskExceeded = "Disk Exceeded"
 )
 
 // TaskEvent is an event that effects the state of a task and contains meta-data

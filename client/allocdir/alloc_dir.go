@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/nomad/structs"
+)
+
+const (
+	checkDiskInterval = time.Second * 5
 )
 
 var (
@@ -30,6 +37,13 @@ var (
 	TaskDirs = []string{"tmp"}
 )
 
+// dirInfo keeps track of disk size and the dirty state for directories within
+// the alloc dir.
+type dirInfo struct {
+	size  int64 // disk size in bytes
+	dirty bool
+}
+
 type AllocDir struct {
 	// AllocDir is the directory used for storing any state
 	// of this allocation. It will be purged on alloc destroy.
@@ -41,6 +55,19 @@ type AllocDir struct {
 
 	// TaskDirs is a mapping of task names to their non-shared directory.
 	TaskDirs map[string]string
+
+	// Size is the total consumed disk size in bytes
+	Size int64
+
+	// watcher monitors the alloc dir and its subdirectories for filesystem
+	// events
+	watcher *fsnotify.Watcher
+
+	// dirCache keeps information on all directories within the shared alloc dir
+	dirCache map[string]*dirInfo
+
+	// destroyCh tears down the filesystem watcher
+	destroyCh chan struct{}
 }
 
 // AllocFileInfo holds information about a file inside the AllocDir
@@ -60,7 +87,12 @@ type AllocDirFS interface {
 }
 
 func NewAllocDir(allocDir string) *AllocDir {
-	d := &AllocDir{AllocDir: allocDir, TaskDirs: make(map[string]string)}
+	d := &AllocDir{
+		AllocDir:  allocDir,
+		TaskDirs:  make(map[string]string),
+		dirCache:  make(map[string]*dirInfo),
+		destroyCh: make(chan struct{}),
+	}
 	d.SharedDir = filepath.Join(d.AllocDir, SharedAllocName)
 	return d
 }
@@ -76,6 +108,9 @@ func (d *AllocDir) Destroy() error {
 	if err := os.RemoveAll(d.AllocDir); err != nil {
 		mErr.Errors = append(mErr.Errors, err)
 	}
+
+	// Signal to stop the filesystem watcher
+	close(d.destroyCh)
 
 	return mErr.ErrorOrNil()
 }
@@ -118,6 +153,32 @@ func (d *AllocDir) Build(tasks []*structs.Task) error {
 	if err := d.dropDirPermissions(d.SharedDir); err != nil {
 		return err
 	}
+
+	// Create new watcher for the alloc directory
+	var err error
+	d.watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+
+	// Add shared alloc directory to watcher
+	if err := d.watcher.Add(d.SharedDir); err != nil {
+		return err
+	}
+
+	info, err := d.Stat(SharedAllocName)
+	if err != nil {
+		return err
+	}
+
+	// Add the shared alloc directory to the cache to make sure it is checked.
+	d.dirCache[SharedAllocName] = &dirInfo{
+		size:  info.Size,
+		dirty: true,
+	}
+
+	// Start watching the shared alloc directory for filesystem events
+	go d.watch()
 
 	for _, dir := range SharedAllocDirs {
 		p := filepath.Join(d.SharedDir, dir)
@@ -370,4 +431,93 @@ func (d *AllocDir) pathExists(path string) bool {
 		}
 	}
 	return true
+}
+
+// watch keeps track of all filesystem events within the shared alloc directory,
+// marking directories dirty if there was an event that potentially altered
+// consumed disk space.
+func (d *AllocDir) watch() {
+	sync := time.NewTicker(checkDiskInterval)
+	defer sync.Stop()
+
+OUTER:
+	// Start tracking filesystem events within the shared alloc dir
+	for {
+		select {
+		case event := <-d.watcher.Events:
+			// hot path if the filesystem operation does not affect disk size
+			if event.Op&fsnotify.Rename == fsnotify.Rename ||
+				event.Op&fsnotify.Chmod == fsnotify.Chmod {
+				continue
+			}
+
+			// Trim shared alloc directory path
+			path := strings.TrimPrefix(event.Name, d.AllocDir+"/")
+			parent := filepath.Dir(path)
+
+			if event.Op&fsnotify.Remove == fsnotify.Remove {
+				delete(d.dirCache, path)
+			}
+
+			if event.Op&fsnotify.Create == fsnotify.Create {
+				// Get file information
+				info, err := d.Stat(path)
+				if err != nil {
+					log.Printf("[WARN] client: failed to stat file: %v", err)
+				}
+
+				// Start watching the directory for filesystem events
+				if info.IsDir {
+					d.dirCache[path] = &dirInfo{
+						size:  info.Size,
+						dirty: true,
+					}
+					if err := d.watcher.Add(event.Name); err != nil {
+						log.Printf("[WARN] client: failed to add : %v", err)
+					}
+				}
+			}
+
+			// If there was a write, create or remove event we mark the parent
+			// dirty to recalculate the total consumed disk space
+			if _, ok := d.dirCache[parent]; ok {
+				d.dirCache[parent].dirty = true
+			}
+
+		case err := <-d.watcher.Errors:
+			log.Printf("[WARN] client: filesystem watcher failed: %v", err)
+
+		case <-sync.C:
+			if err := d.syncDiskUsage(); err != nil {
+				log.Printf("[WARN] client: failed to sync disk usage: %v", err)
+			}
+
+		case <-d.destroyCh:
+			break OUTER
+		}
+	}
+
+	d.watcher.Close()
+}
+
+// syncDiskUsage iterates over all watched alloc directories and refreshes the
+// total consumed disk space. It only recalculates disk size if a directory is
+// marked dirty, thereby reducing overall filesystem i/o.
+func (d *AllocDir) syncDiskUsage() error {
+	d.Size = 0
+	for path, info := range d.dirCache {
+		if info.dirty {
+			files, err := d.List(path)
+			if err != nil {
+				return err
+			}
+			info.size = 0
+			for _, file := range files {
+				info.size += file.Size
+			}
+			info.dirty = false
+		}
+		d.Size += info.size
+	}
+	return nil
 }
