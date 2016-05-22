@@ -154,31 +154,8 @@ func (d *AllocDir) Build(tasks []*structs.Task) error {
 		return err
 	}
 
-	// Create new watcher for the alloc directory
-	var err error
-	d.watcher, err = fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-
-	// Add shared alloc directory to watcher
-	if err := d.watcher.Add(d.SharedDir); err != nil {
-		return err
-	}
-
-	info, err := d.Stat(SharedAllocName)
-	if err != nil {
-		return err
-	}
-
-	// Add the shared alloc directory to the cache to make sure it is checked.
-	d.dirCache[SharedAllocName] = &dirInfo{
-		size:  info.Size,
-		dirty: true,
-	}
-
-	// Start watching the shared alloc directory for filesystem events
-	go d.watch()
+	// Start watching the shared alloc directory
+	go d.WatchSharedDir()
 
 	for _, dir := range SharedAllocDirs {
 		p := filepath.Join(d.SharedDir, dir)
@@ -436,9 +413,35 @@ func (d *AllocDir) pathExists(path string) bool {
 // watch keeps track of all filesystem events within the shared alloc directory,
 // marking directories dirty if there was an event that potentially altered
 // consumed disk space.
-func (d *AllocDir) watch() {
+func (d *AllocDir) WatchSharedDir() {
 	sync := time.NewTicker(checkDiskInterval)
 	defer sync.Stop()
+
+	// Create new watcher for the alloc directory
+	var err error
+	d.watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("[WARN] client: failed to create watcher: %v", err)
+		return
+	}
+
+	// Add shared alloc directory to watcher
+	if err := d.watcher.Add(d.SharedDir); err != nil {
+		log.Printf("[WARN] client: failed to add watch: %v", err)
+		return
+	}
+
+	info, err := d.Stat(SharedAllocName)
+	if err != nil {
+		log.Printf("[WARN] client: could not stat: %v", err)
+		return
+	}
+
+	// Add the shared alloc directory to the cache to make sure it is checked.
+	d.dirCache[SharedAllocName] = &dirInfo{
+		size:  info.Size,
+		dirty: true,
+	}
 
 OUTER:
 	// Start tracking filesystem events within the shared alloc dir

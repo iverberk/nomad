@@ -120,6 +120,9 @@ func (r *AllocRunner) RestoreState() error {
 	r.allocClientDescription = snap.AllocClientDescription
 	r.taskStates = snap.TaskStates
 
+	// Start tracking filesystem events for the shared alloc directory
+	go r.ctx.AllocDir.WatchSharedDir()
+
 	// Restore the task runners
 	var mErr multierror.Error
 	for name, state := range r.taskStates {
@@ -397,7 +400,7 @@ func (r *AllocRunner) Run() {
 	r.taskLock.Lock()
 
 	// At this point we are only interested in enforcing disk space by the alloc runner
-	r.resources = &structs.Resources{DiskMB: 0}
+	r.resources = &structs.Resources{}
 	for _, task := range tg.Tasks {
 		if _, ok := r.restored[task.Name]; ok {
 			continue
