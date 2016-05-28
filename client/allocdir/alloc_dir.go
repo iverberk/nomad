@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	checkDiskInterval = time.Second * 5
+	checkDiskInterval = time.Second * 10
 )
 
 var (
@@ -452,6 +452,9 @@ func (d *AllocDir) WatchSharedDir() {
 		}
 	}
 
+	// Do the initial disk sync
+	d.syncDiskUsage()
+
 OUTER:
 	// Start tracking filesystem events within the shared alloc dir
 	for {
@@ -503,7 +506,6 @@ OUTER:
 			if err := d.syncDiskUsage(); err != nil {
 				log.Printf("[WARN] client: failed to sync disk usage: %v", err)
 			}
-
 		case <-d.destroyCh:
 			break OUTER
 		}
