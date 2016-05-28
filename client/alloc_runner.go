@@ -26,7 +26,7 @@ const (
 
 	// watchdogInterval is the interval at which resource constraints for the
 	// allocation are being checked and enforced.
-	watchdogInterval = 30 * time.Second
+	watchdogInterval = 5 * time.Second
 )
 
 // AllocStateUpdater is used to update the status of an allocation
@@ -61,9 +61,6 @@ type AllocRunner struct {
 	destroyCh   chan struct{}
 	destroyLock sync.Mutex
 	waitCh      chan struct{}
-
-	// resources tracks the aggregated task resources.
-	resources *structs.Resources
 
 	// watchdog regularly checks if alloc resources are within bounds.
 	watchdog *time.Ticker
@@ -403,9 +400,7 @@ func (r *AllocRunner) Run() {
 	r.logger.Printf("[DEBUG] client: starting task runners for alloc '%s'", r.alloc.ID)
 	r.taskLock.Lock()
 
-	r.resources = &structs.Resources{}
 	for _, task := range tg.Tasks {
-		r.resources.Add(task.Resources)
 		if _, ok := r.restored[task.Name]; ok {
 			continue
 		}
@@ -471,7 +466,7 @@ OUTER:
 
 // checkResources monitors and enforces alloc resource usage
 func (r *AllocRunner) checkResources() {
-	if r.ctx.AllocDir.Size >= r.resources.DiskInBytes() {
+	if r.ctx.AllocDir.Size >= r.Alloc().Resources.DiskInBytes() {
 		r.setStatus(structs.AllocClientStatusFailed, "Disk Resources Exceeded")
 		r.taskDestroyEvent = structs.TaskDiskExceeded
 		r.Destroy()
