@@ -525,8 +525,12 @@ func (r *TaskRunner) Update(update *structs.Allocation) {
 	}
 }
 
+func (r *TaskRunner) SetDestroyEvent(event string) {
+	r.destroyEvent = event
+}
+
 // Destroy is used to indicate that the task context should be destroyed
-func (r *TaskRunner) Destroy(event string) {
+func (r *TaskRunner) Destroy() {
 	r.destroyLock.Lock()
 	defer r.destroyLock.Unlock()
 
@@ -534,6 +538,5 @@ func (r *TaskRunner) Destroy(event string) {
 		return
 	}
 	r.destroy = true
-	r.destroyEvent = event
 	close(r.destroyCh)
 }
