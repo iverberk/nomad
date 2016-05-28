@@ -40,8 +40,8 @@ var (
 // dirInfo keeps track of disk size and the dirty state for directories within
 // the alloc dir.
 type dirInfo struct {
-	size  int64 // disk size in bytes
-	dirty bool
+	Size  int64 // disk size in bytes
+	Dirty bool
 }
 
 type AllocDir struct {
@@ -59,12 +59,12 @@ type AllocDir struct {
 	// Size is the total consumed disk size in bytes
 	Size int64
 
+	// DirCache keeps information on all directories within the shared alloc dir
+	DirCache map[string]*dirInfo
+
 	// watcher monitors the alloc dir and its subdirectories for filesystem
 	// events
 	watcher *fsnotify.Watcher
-
-	// dirCache keeps information on all directories within the shared alloc dir
-	dirCache map[string]*dirInfo
 
 	// destroyCh tears down the filesystem watcher
 	destroyCh chan struct{}
@@ -90,7 +90,7 @@ func NewAllocDir(allocDir string) *AllocDir {
 	d := &AllocDir{
 		AllocDir:  allocDir,
 		TaskDirs:  make(map[string]string),
-		dirCache:  make(map[string]*dirInfo),
+		DirCache:  make(map[string]*dirInfo),
 		destroyCh: make(chan struct{}),
 	}
 	d.SharedDir = filepath.Join(d.AllocDir, SharedAllocName)
@@ -99,6 +99,9 @@ func NewAllocDir(allocDir string) *AllocDir {
 
 // Tears down previously build directory structure.
 func (d *AllocDir) Destroy() error {
+	// Signal to stop the filesystem watcher
+	close(d.destroyCh)
+
 	// Unmount all mounted shared alloc dirs.
 	var mErr multierror.Error
 	if err := d.UnmountAll(); err != nil {
@@ -108,9 +111,6 @@ func (d *AllocDir) Destroy() error {
 	if err := os.RemoveAll(d.AllocDir); err != nil {
 		mErr.Errors = append(mErr.Errors, err)
 	}
-
-	// Signal to stop the filesystem watcher
-	close(d.destroyCh)
 
 	return mErr.ErrorOrNil()
 }
@@ -412,7 +412,7 @@ func (d *AllocDir) pathExists(path string) bool {
 
 // watch keeps track of all filesystem events within the shared alloc directory,
 // marking directories dirty if there was an event that potentially altered
-// consumed disk space.
+// total consumed disk space.
 func (d *AllocDir) WatchSharedDir() {
 	sync := time.NewTicker(checkDiskInterval)
 	defer sync.Stop()
@@ -425,22 +425,31 @@ func (d *AllocDir) WatchSharedDir() {
 		return
 	}
 
-	// Add shared alloc directory to watcher
-	if err := d.watcher.Add(d.SharedDir); err != nil {
-		log.Printf("[WARN] client: failed to add watch: %v", err)
-		return
-	}
+	// Check if we have to initialize based on restored state
+	if len(d.DirCache) != 0 {
+		d.destroyCh = make(chan struct{})
+		// Mark every directory dirty to force recalculation of disk size
+		for path := range d.DirCache {
+			d.DirCache[path].Dirty = true
+		}
+	} else {
+		// Add shared alloc directory to watcher
+		if err := d.watcher.Add(d.SharedDir); err != nil {
+			log.Printf("[WARN] client: failed to add watch: %v", err)
+			return
+		}
 
-	info, err := d.Stat(SharedAllocName)
-	if err != nil {
-		log.Printf("[WARN] client: could not stat: %v", err)
-		return
-	}
+		info, err := d.Stat(SharedAllocName)
+		if err != nil {
+			log.Printf("[WARN] client: could not stat: %v", err)
+			return
+		}
 
-	// Add the shared alloc directory to the cache to make sure it is checked.
-	d.dirCache[SharedAllocName] = &dirInfo{
-		size:  info.Size,
-		dirty: true,
+		// Add the shared alloc directory to the cache to make sure it is checked.
+		d.DirCache[SharedAllocName] = &dirInfo{
+			Size:  info.Size,
+			Dirty: true,
+		}
 	}
 
 OUTER:
@@ -459,7 +468,7 @@ OUTER:
 			parent := filepath.Dir(path)
 
 			if event.Op&fsnotify.Remove == fsnotify.Remove {
-				delete(d.dirCache, path)
+				delete(d.DirCache, path)
 			}
 
 			if event.Op&fsnotify.Create == fsnotify.Create {
@@ -471,9 +480,9 @@ OUTER:
 
 				// Start watching the directory for filesystem events
 				if info.IsDir {
-					d.dirCache[path] = &dirInfo{
-						size:  info.Size,
-						dirty: true,
+					d.DirCache[path] = &dirInfo{
+						Size:  info.Size,
+						Dirty: true,
 					}
 					if err := d.watcher.Add(event.Name); err != nil {
 						log.Printf("[WARN] client: failed to add : %v", err)
@@ -482,9 +491,9 @@ OUTER:
 			}
 
 			// If there was a write, create or remove event we mark the parent
-			// dirty to recalculate the total consumed disk space
-			if _, ok := d.dirCache[parent]; ok {
-				d.dirCache[parent].dirty = true
+			// Dirty to recalculate the total consumed disk space
+			if _, ok := d.DirCache[parent]; ok {
+				d.DirCache[parent].Dirty = true
 			}
 
 		case err := <-d.watcher.Errors:
@@ -508,19 +517,19 @@ OUTER:
 // marked dirty, thereby reducing overall filesystem i/o.
 func (d *AllocDir) syncDiskUsage() error {
 	d.Size = 0
-	for path, info := range d.dirCache {
-		if info.dirty {
+	for path, info := range d.DirCache {
+		if info.Dirty {
 			files, err := d.List(path)
 			if err != nil {
 				return err
 			}
-			info.size = 0
+			info.Size = 0
 			for _, file := range files {
-				info.size += file.Size
+				info.Size += file.Size
 			}
-			info.dirty = false
+			info.Dirty = false
 		}
-		d.Size += info.size
+		d.Size += info.Size
 	}
 	return nil
 }
